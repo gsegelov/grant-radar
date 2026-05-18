@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from agents import function_tool, RunContextWrapper
 from models.schemas import UrlValidationResult
-# from pipeline.context import PipelineContext
+from pipeline.context import PipelineContext
 
 @function_tool
 def fetch_page(url: str) -> str:
