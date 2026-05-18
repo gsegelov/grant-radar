@@ -50,14 +50,14 @@ def _search_tavily(query: str) -> str:
 def _search_duckduckgo(query: str) -> str:
     """DuckDuckGo fallback — free, no API key required."""
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS      # new package name
+        except ImportError:
+            from duckduckgo_search import DDGS  # fallback to old name
         results = []
-
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=5):
                 results.append(f"Title: {r['title']}\nURL: {r['href']}\nSummary: {r['body']}\n")
-
         return "\n---\n".join(results) if results else "No results found."
-
     except Exception as e:
         return f"DuckDuckGo search error: {str(e)}"
