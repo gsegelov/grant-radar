@@ -102,6 +102,9 @@ def build_docx(
     report_lookup = {r.grant_name: r for r in reports}
 
     for sg in sorted_grants:
+        # skip disqualified grants from chapter section — they still show in the summary table
+        if sg.disqualified:
+            continue
         grant_name = sg.grant.candidate.name
 
         # ── SECTION 1: STRATEGIC BRIEF ────────────────────────────────────

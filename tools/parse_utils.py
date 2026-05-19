@@ -12,28 +12,60 @@ import re
 import json
 
 
-def parse_json_output(raw_output: str) -> dict:
+def parse_json_output(raw_output: str) -> dict | list:
     """
     Clean and parse a JSON string returned by a Gemini agent.
 
-    Handles two common Gemini quirks:
+    Handles three common Gemini quirks:
     1. JSON wrapped in ```json ... ``` markdown fences
     2. Invalid backslash escape sequences in scraped text content
-
-    Returns a plain dict — caller constructs the Pydantic object.
-    Raises json.JSONDecodeError if the output cannot be parsed.
+    3. Extra text after the closing brace or bracket
     """
     raw = raw_output.strip()
 
     # strip markdown fences if present
     if "```" in raw:
-        raw = raw.split("```")[1]       # content between first and second fence
+        raw = raw.split("```")[1]
         if raw.startswith("json"):
-            raw = raw[4:]               # strip the "json" language tag
+            raw = raw[4:]
     raw = raw.strip()
 
-    # fix invalid backslash escapes — valid JSON escapes are: \" \\ \/ \b \f \n \r \t \uXXXX
-    # scraped web content often contains bare backslashes that break json.loads
+    # fix invalid backslash escapes
     raw = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', raw)
 
-    return json.loads(raw)
+    # extract just the JSON object or array — ignore any trailing text
+    if raw.startswith("{"):
+        end = _find_closing(raw, "{", "}")
+    elif raw.startswith("["):
+        end = _find_closing(raw, "[", "]")
+    else:
+        end = len(raw)
+
+    return json.loads(raw[:end])
+
+
+def _find_closing(s: str, open_char: str, close_char: str) -> int:
+    """Find the index just after the matching closing bracket."""
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i, ch in enumerate(s):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == open_char:
+            depth += 1
+        elif ch == close_char:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(s)

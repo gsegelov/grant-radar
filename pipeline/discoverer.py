@@ -2,10 +2,10 @@
 pipeline/discoverer.py
 
 GrantDiscoverer agent — executes one search query and returns grant candidates.
-Called in parallel via asyncio.gather() in app.py, once per search query.
+Called with staggered start times in app.py to avoid Tavily rate limiting.
 
-Each call returns a list of GrantCandidate objects. Results from all parallel
-calls are merged and deduplicated before Phase 4 begins.
+Each call returns a list of GrantCandidate objects. Results from all calls
+are merged and deduplicated before Phase 4 begins.
 """
 
 import os
@@ -65,23 +65,28 @@ grant_discoverer = Agent(
 
 def parse_grant_candidates(raw_output: str, query: str) -> list[GrantCandidate]:
     """
-    Parse GrantDiscoverer's JSON array output into a list of GrantCandidate objects.
-    Falls back to empty list if parsing fails — one bad query shouldn't stop discovery.
+    Parse JSON array output into a list of GrantCandidate objects.
+    Injects source_query from the function parameter if the agent omitted it.
+    Skips individual items that fail validation rather than dropping the whole list.
     """
     try:
         data = parse_json_output(raw_output)
         if not isinstance(data, list):
             return []
-        return [GrantCandidate(**item) for item in data]
+        candidates = []
+        for item in data:
+            item.setdefault("source_query", query)  # agent often omits this required field
+            try:
+                candidates.append(GrantCandidate(**item))
+            except Exception:
+                continue                            # skip bad items, keep good ones
+        return candidates
     except Exception:
         return []
 
 
 def deduplicate_candidates(all_candidates: list[GrantCandidate]) -> list[GrantCandidate]:
-    """
-    Remove duplicate grants from merged parallel results.
-    Deduplication is by URL — same grant page = same grant.
-    """
+    """Remove duplicate grants by URL from merged results."""
     seen_urls = set()
     unique = []
     for candidate in all_candidates:
@@ -96,25 +101,28 @@ async def run_discovery_parallel(
     ctx: PipelineContext
 ) -> list[GrantCandidate]:
     """
-    Run GrantDiscoverer in parallel across all search queries.
+    Run GrantDiscoverer with staggered start times to avoid Tavily rate limiting.
     Returns a deduplicated list of all candidates found.
     Called by app.py after Phase 2 completes.
     """
-    # create one coroutine per query — none start executing yet
-    tasks = [
-        Runner.run(grant_discoverer, query, context=ctx)
-        for query in search_queries
-    ]
-
-    # fire all tasks simultaneously — wait for all to finish
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     all_candidates = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            print(f"Query {i} failed: {result}")
-            continue
-        candidates = parse_grant_candidates(result.final_output, search_queries[i])
-        all_candidates.extend(candidates)
+    tasks = []
+
+    # stagger task starts by 0.5s to prevent rate limiting on Tavily free tier
+    for i, query in enumerate(search_queries):
+        await asyncio.sleep(0.5 * i)
+        task = asyncio.create_task(
+            Runner.run(grant_discoverer, query, context=ctx)
+        )
+        tasks.append((task, query))
+
+    # wait for all tasks to complete and collect results
+    for task, query in tasks:
+        try:
+            result = await task
+            candidates = parse_grant_candidates(result.final_output, query)
+            all_candidates.extend(candidates)
+        except Exception as e:
+            print(f"Discovery query failed: {e}")
 
     return deduplicate_candidates(all_candidates)
