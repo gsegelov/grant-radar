@@ -11,9 +11,9 @@ directly determines scoring accuracy and compliance check usefulness.
 import os
 import asyncio
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import GrantCandidate, GrantData
 from pipeline.context import PipelineContext
 from tools.fetch_tools import fetch_page
@@ -22,7 +22,14 @@ from tools.parse_utils import parse_json_output
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
 
 # ── AGENT: GrantAnalyzer ──────────────────────────────────────────────────
@@ -53,8 +60,8 @@ grant_analyzer = Agent(
     Use 0 for award amounts if not found. Use "Unknown" for deadline if not found.
     application_complexity: low = simple form, medium = narrative required,
     high = full proposal with budget and attachments.""",
-    tools=[fetch_page, search_grants],      # two tools — fetch first, search as fallback
-    model=LitellmModel(model="gemini/gemini-2.5-flash")
+    tools=[fetch_page, search_grants],
+    model="gemini-2.5-flash"
 )
 
 
@@ -62,13 +69,12 @@ def parse_grant_data(raw_output: str, candidate: GrantCandidate) -> GrantData:
     """
     Parse GrantAnalyzer's JSON output into a GrantData object.
     Wraps the original GrantCandidate so downstream agents have full context.
-    Falls back to a minimal GrantData if parsing fails — keeps pipeline moving.
+    Falls back to a minimal GrantData if parsing fails.
     """
     try:
         data = parse_json_output(raw_output)
-        return GrantData(candidate=candidate, **data)   # inject candidate into the parsed data
+        return GrantData(candidate=candidate, **data)
     except Exception:
-        # return minimal object rather than crashing the whole parallel batch
         return GrantData(candidate=candidate)
 
 
@@ -82,7 +88,6 @@ async def run_analysis_parallel(
     Caps at max_grants to control cost — set lower during development.
     Called by app.py after Phase 3 completes.
     """
-    # cap candidates to avoid runaway costs during testing
     candidates_to_analyze = candidates[:max_grants]
 
     tasks = [

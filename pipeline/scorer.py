@@ -9,54 +9,57 @@ Called in parallel via asyncio.gather() in app.py, once per GrantData.
 import os
 import asyncio
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner, output_guardrail, GuardrailFunctionOutput, RunContextWrapper
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, output_guardrail, GuardrailFunctionOutput,
+                    RunContextWrapper, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import GrantData, ScoredGrant, OrgProfile
 from pipeline.context import PipelineContext
 from tools.parse_utils import parse_json_output
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
-# minimum score threshold for a grant to be marked recommended
 RECOMMENDATION_THRESHOLD = 60
 
 
 # ── GUARDRAIL: ScoringValidator ───────────────────────────────────────────
 # Fires after every FitScorer run.
 # Pure Python — no LLM needed, just arithmetic checks.
-# Trips if: no recommended grants exist, or all scores are within 5 points
+# Trips if: no recommended grants exist, or all scores within 5 points
 # of each other (degenerate distribution — model isn't differentiating).
 
-@output_guardrail  # SDK decorator — registers this as an output guardrail
+@output_guardrail
 async def scoring_validator(
     ctx: RunContextWrapper[PipelineContext],
     agent: Agent,
-    output: str                             # raw text output from FitScorer
+    output: str
 ) -> GuardrailFunctionOutput:
     """Validate that scoring produced meaningful, differentiated results."""
-
     try:
-        scored_grants = ctx.context.scored_grants   # read accumulated scores from context
+        scored_grants = ctx.context.scored_grants
 
         if not scored_grants:
-            # no scores yet — too early to validate, let it pass
             return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
 
         non_disqualified = [sg for sg in scored_grants if not sg.disqualified]
 
-        # check 1: at least one recommended grant exists
         has_recommendation = any(sg.recommended for sg in non_disqualified)
 
-        # check 2: score range is meaningful — not all bunched together
         if len(non_disqualified) > 1:
             scores = [sg.score for sg in non_disqualified]
             score_range = max(scores) - min(scores)
-            degenerate = score_range <= 5      # all scores within 5 points = not differentiating
+            degenerate = score_range <= 5
         else:
-            degenerate = False                  # only one grant — range check doesn't apply
+            degenerate = False
 
         should_trip = not has_recommendation or degenerate
 
@@ -97,8 +100,8 @@ fit_scorer = Agent(
         "disqualifiers": [],
         "recommended": false
     }""",
-    model=LitellmModel(model="gemini/gemini-2.5-pro"),  # Pro — nuanced judgment required
-    output_guardrails=[scoring_validator]                # fires after every score
+    model="gemini-2.5-pro",
+    output_guardrails=[scoring_validator]
 )
 
 
@@ -163,7 +166,6 @@ async def run_scoring_parallel(
             continue
         scored = parse_scored_grant(result.final_output, grant_data_list[i])
         scored_grants.append(scored)
-        ctx.scored_grants.append(scored)    # update context so guardrail sees accumulating scores
+        ctx.scored_grants.append(scored)
 
-    # sort by score descending — rank 1 = best fit
     return sorted(scored_grants, key=lambda sg: sg.score, reverse=True)

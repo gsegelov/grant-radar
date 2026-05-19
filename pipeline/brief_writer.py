@@ -2,21 +2,28 @@
 pipeline/brief_writer.py
 
 StrategicBriefWriter agent — writes application angle briefs for top scored grants.
-Runs sequentially (not parallel) — only processes top 5 grants after HITL selection.
+Runs sequentially — only processes top 5 grants after HITL selection.
 """
 
 import os
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import ScoredGrant, GrantBrief, OrgProfile
 from pipeline.context import PipelineContext
 from tools.parse_utils import parse_json_output
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
 
 # ── AGENT: StrategicBriefWriter ───────────────────────────────────────────
@@ -42,7 +49,7 @@ strategic_brief_writer = Agent(
         "sections_to_strengthen": ["section1", "section2"],
         "narrative_hook": "suggested opening sentence for the application"
     }""",
-    model=LitellmModel(model="gemini/gemini-2.5-pro")   # Pro — strategic reasoning
+    model="gemini-2.5-pro"
 )
 
 
@@ -60,8 +67,7 @@ def parse_grant_brief(raw_output: str) -> GrantBrief:
     try:
         data = parse_json_output(raw_output)
         return GrantBrief(**data)
-    except Exception as e:
-        # return minimal brief rather than crashing — drafter can still run
+    except Exception:
         return GrantBrief(
             grant_name="Unknown",
             recommended_framing="Brief generation failed — review grant manually.",
@@ -77,8 +83,8 @@ async def run_brief_writing(
 ) -> list[GrantBrief]:
     """
     Run StrategicBriefWriter sequentially across selected grants.
-    Sequential (not parallel) — brief quality benefits from focused attention
-    per grant, and this phase only processes 2-5 grants after HITL selection.
+    Sequential — brief quality benefits from focused attention per grant,
+    and this phase only processes 2-5 grants after HITL selection.
     Called by app.py after the HITL gate.
     """
     briefs = []

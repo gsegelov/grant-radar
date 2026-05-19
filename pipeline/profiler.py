@@ -10,21 +10,28 @@ The quality of search_queries generated here determines what grants get found.
 
 import os
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner, RunContextWrapper
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import OrgProfile, ScrapedSite
 from pipeline.context import PipelineContext
 from tools.parse_utils import parse_json_output
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
 
 # ── AGENT: OrgProfiler ────────────────────────────────────────────────────
-# No tools — this agent reasons over text passed directly in the prompt.
-# Receives all scraped text concatenated into one input string.
+# No tools — reasons over text passed directly in the prompt.
+# Receives all scraped text combined into one input string.
 
 org_profiler = Agent(
     name="OrgProfiler",
@@ -54,7 +61,7 @@ org_profiler = Agent(
         "inferred_programs": ["program1", "program2"],
         "search_queries": ["query1", "query2", "query3", "query4", "query5", "query6"]
     }""",
-    model=LitellmModel(model="gemini/gemini-2.5-pro")   # Pro — requires real reasoning
+    model="gemini-2.5-pro"      # Pro — requires real reasoning
 )
 
 
@@ -74,7 +81,7 @@ def build_profiler_input(site: ScrapedSite, user_context: str) -> str:
     if user_context:
         parts.append(f"USER PRIORITIES:\n{user_context}")
 
-    return "\n\n---\n\n".join(parts)     # join sections with a clear separator
+    return "\n\n---\n\n".join(parts)    # join sections with a clear separator
 
 
 def parse_org_profile(raw_output: str) -> OrgProfile:

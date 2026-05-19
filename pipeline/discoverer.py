@@ -9,12 +9,11 @@ calls are merged and deduplicated before Phase 4 begins.
 """
 
 import os
-import json
 import asyncio
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import GrantCandidate, OrgProfile
 from pipeline.context import PipelineContext
 from tools.search_tools import search_grants
@@ -22,7 +21,14 @@ from tools.parse_utils import parse_json_output
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
 
 # ── AGENT: GrantDiscoverer ────────────────────────────────────────────────
@@ -53,7 +59,7 @@ grant_discoverer = Agent(
 
     Return an empty array [] if no legitimate grants are found.""",
     tools=[search_grants],
-    model=LitellmModel(model="gemini/gemini-2.5-flash")
+    model="gemini-2.5-flash"
 )
 
 
@@ -65,10 +71,10 @@ def parse_grant_candidates(raw_output: str, query: str) -> list[GrantCandidate]:
     try:
         data = parse_json_output(raw_output)
         if not isinstance(data, list):
-            return []   # agent returned an object instead of array — skip it
+            return []
         return [GrantCandidate(**item) for item in data]
     except Exception:
-        return []       # parse failure on one query — return empty, continue pipeline
+        return []
 
 
 def deduplicate_candidates(all_candidates: list[GrantCandidate]) -> list[GrantCandidate]:
@@ -103,11 +109,10 @@ async def run_discovery_parallel(
     # fire all tasks simultaneously — wait for all to finish
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # collect all candidates from all queries
     all_candidates = []
     for i, result in enumerate(results):
         if isinstance(result, Exception):
-            print(f"Query {i} failed: {result}")   # log failure, don't crash
+            print(f"Query {i} failed: {result}")
             continue
         candidates = parse_grant_candidates(result.final_output, search_queries[i])
         all_candidates.extend(candidates)

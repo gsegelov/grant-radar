@@ -8,16 +8,23 @@ Last agent in the pipeline before output assembly.
 
 import os
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import ProposalDraft, GrantData, ComplianceReport
 from pipeline.context import PipelineContext
 from tools.parse_utils import parse_json_output
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
 
 # ── AGENT: ComplianceChecker ──────────────────────────────────────────────
@@ -53,7 +60,7 @@ compliance_checker = Agent(
         "overall_readiness": "Strong or Needs Work or Incomplete",
         "priority_fixes": ["fix1", "fix2", "fix3"]
     }""",
-    model=LitellmModel(model="gemini/gemini-2.5-pro")   # Pro — careful cross-referencing
+    model="gemini-2.5-pro"
 )
 
 
@@ -70,11 +77,10 @@ def parse_compliance_report(raw_output: str) -> ComplianceReport:
     """Parse ComplianceChecker's JSON output into a ComplianceReport object."""
     try:
         data = parse_json_output(raw_output)
-        # ensure priority_fixes has exactly 3 items — pad or trim if needed
         fixes = data.get("priority_fixes", [])
         while len(fixes) < 3:
             fixes.append("Review and strengthen this application before submitting.")
-        data["priority_fixes"] = fixes[:3]      # trim to 3 if agent returned more
+        data["priority_fixes"] = fixes[:3]
         return ComplianceReport(**data)
     except Exception:
         return ComplianceReport(
@@ -98,7 +104,6 @@ async def run_compliance_checks(
     Matches drafts to grant data by grant name.
     Called by app.py after drafting completes.
     """
-    # build lookup so we can find grant data by name
     grant_data_lookup = {gd.candidate.name: gd for gd in grant_data_list}
     reports = []
 

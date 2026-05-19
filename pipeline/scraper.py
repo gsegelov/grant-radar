@@ -10,19 +10,29 @@ JSON text that we parse manually and validate with Pydantic.
 """
 
 import os
+import asyncio
 from dotenv import load_dotenv
-from google import genai
-from agents import Agent, Runner, input_guardrail, GuardrailFunctionOutput, RunContextWrapper
-from agents.extensions.models.litellm_model import LitellmModel
+from openai import AsyncOpenAI
+from agents import (Agent, Runner, input_guardrail, GuardrailFunctionOutput,
+                    RunContextWrapper, set_default_openai_client,
+                    set_default_openai_api, set_tracing_disabled)
 from models.schemas import ScrapedSite, UrlValidationResult
 from pipeline.context import PipelineContext
 from tools.fetch_tools import fetch_page, validate_url
-from tools.parse_utils import parse_json_output  # shared JSON parsing utility
+from tools.parse_utils import parse_json_output
 
-load_dotenv()   # load .env so GOOGLE_API_KEY is available
+load_dotenv()
 
-# connect to Gemini using the API key from .env
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# ── GEMINI SETUP ──────────────────────────────────────────────────────────
+# Routes SDK calls through Gemini's OpenAI-compatible endpoint.
+# set_tracing_disabled silences OPENAI_API_KEY warnings.
+gemini_client = AsyncOpenAI(
+    api_key=os.getenv("GOOGLE_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+set_default_openai_client(gemini_client)
+set_default_openai_api("chat_completions")
+set_tracing_disabled(True)
 
 
 # ── GUARDRAIL: URLValidator ───────────────────────────────────────────────
@@ -30,34 +40,32 @@ client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 # If the URL is invalid, tripwire_triggered=True stops the pipeline here —
 # no scraping, no profiling, no credits spent.
 
-@input_guardrail  # SDK decorator — registers this as an input guardrail function
+@input_guardrail
 async def url_validator_guardrail(
-    ctx: RunContextWrapper[PipelineContext],    # wrapper around our shared PipelineContext
-    agent: Agent,                               # the agent this guardrail is attached to
-    input: str                                  # the raw input string passed to the agent
-) -> GuardrailFunctionOutput:                   # SDK-required return type for guardrails
+    ctx: RunContextWrapper[PipelineContext],
+    agent: Agent,
+    input: str
+) -> GuardrailFunctionOutput:
     """Check the submitted URL before allowing WebScraper to run."""
 
-    # lightweight sub-agent — Flash is fast and cheap for a simple judgment call
     validator_agent = Agent(
         name="URLValidator",
         instructions="""You are a URL validator. Use the validate_url tool on the URL provided.
         After calling the tool, return ONLY a JSON object with no markdown fences:
         {"is_valid": true or false, "reason": "explanation here"}""",
         tools=[validate_url],
-        model=LitellmModel(model="gemini/gemini-2.5-flash")
+        model="gemini-2.5-flash"
     )
 
-    # run the validator sub-agent inside the guardrail
     result = await Runner.run(validator_agent, input, context=ctx.context)
 
     # parse JSON output using shared utility — handles fences and escape issues
     data = parse_json_output(result.final_output)
-    validation = UrlValidationResult(**data)    # unpack dict into Pydantic model
+    validation = UrlValidationResult(**data)
 
     return GuardrailFunctionOutput(
-        output_info=validation,                     # passed through for logging
-        tripwire_triggered=not validation.is_valid  # True = stop pipeline, False = continue
+        output_info=validation,
+        tripwire_triggered=not validation.is_valid
     )
 
 
@@ -82,9 +90,9 @@ web_scraper = Agent(
     }
 
     If a page fetch fails, skip it and continue.""",
-    tools=[fetch_page],                                 # only tool this agent can call
-    model=LitellmModel(model="gemini/gemini-2.5-flash"),
-    input_guardrails=[url_validator_guardrail]          # runs before every WebScraper call
+    tools=[fetch_page],
+    model="gemini-2.5-flash",
+    input_guardrails=[url_validator_guardrail]
 )
 
 
@@ -95,5 +103,5 @@ web_scraper = Agent(
 
 def parse_scraped_site(raw_output: str) -> ScrapedSite:
     """Parse WebScraper's JSON text output into a ScrapedSite object."""
-    data = parse_json_output(raw_output)    # shared utility handles fences and escape fixes
-    return ScrapedSite(**data)              # Pydantic validates all fields on construction
+    data = parse_json_output(raw_output)
+    return ScrapedSite(**data)
