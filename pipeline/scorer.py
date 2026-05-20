@@ -165,10 +165,14 @@ async def run_scoring_parallel(
         for i, gd in enumerate(grant_data_list)
     ]
 
+    done, pending = await asyncio.wait(tasks, timeout=45)
+    for task in pending:
+        task.cancel()
+
     scored_grants = []
-    for coro in asyncio.as_completed(tasks):
+    for task in done:
         try:
-            i, result = await coro
+            i, result = task.result()
             scored = parse_scored_grant(result.final_output, grant_data_list[i])
             scored_grants.append(scored)
             ctx.scored_grants.append(scored)
