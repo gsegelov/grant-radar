@@ -81,7 +81,8 @@ def parse_grant_data(raw_output: str, candidate: GrantCandidate) -> GrantData:
 async def run_analysis_parallel(
     candidates: list[GrantCandidate],
     ctx: PipelineContext,
-    max_grants: int = 15
+    max_grants: int = 15,
+    on_progress=None
 ) -> list[GrantData]:
     """
     Run GrantAnalyzer in parallel across all candidates.
@@ -90,23 +91,28 @@ async def run_analysis_parallel(
     """
     candidates_to_analyze = candidates[:max_grants]
 
-    tasks = [
-        Runner.run(
+    async def _analyze_one(i, c):
+        result = await Runner.run(
             grant_analyzer,
             f"Analyze this grant: {c.name} by {c.funder}. URL: {c.url}",
             context=ctx
         )
-        for c in candidates_to_analyze
+        return i, result
+
+    tasks = [
+        asyncio.ensure_future(_analyze_one(i, c))
+        for i, c in enumerate(candidates_to_analyze)
     ]
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     grant_data_list = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            print(f"Analysis failed for {candidates_to_analyze[i].name}: {result}")
-            continue
-        grant_data = parse_grant_data(result.final_output, candidates_to_analyze[i])
-        grant_data_list.append(grant_data)
+    for coro in asyncio.as_completed(tasks):
+        try:
+            i, result = await coro
+            grant_data = parse_grant_data(result.final_output, candidates_to_analyze[i])
+            grant_data_list.append(grant_data)
+            if on_progress:
+                on_progress(len(grant_data_list), len(candidates_to_analyze))
+        except Exception as e:
+            print(f"Analysis failed: {e}")
 
     return grant_data_list

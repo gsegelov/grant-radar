@@ -47,8 +47,6 @@ set_tracing_disabled(True)
 
 
 # ── PIPELINE: Phases 1–5 (scrape through score) ───────────────────────────
-# Returns scored grants sorted by score descending.
-# Called first — before the HITL gate.
 
 async def run_pipeline_phase1_to_5(
     org_url: str,
@@ -56,7 +54,7 @@ async def run_pipeline_phase1_to_5(
     user_context: str,
     max_grants: int,
     research_depth: str,
-    progress_callback=None       # optional function(message) for Gradio status updates
+    progress_callback=None
 ) -> tuple[PipelineContext, list]:
     """
     Run phases 1–5 of the pipeline and return context + scored grants.
@@ -71,7 +69,6 @@ async def run_pipeline_phase1_to_5(
         else:
             print(msg)
 
-    # create shared context — passed to every agent run
     ctx = PipelineContext(
         org_url=org_url,
         org_type=org_type,
@@ -99,21 +96,24 @@ async def run_pipeline_phase1_to_5(
     # ── PHASE 3: Discover ─────────────────────────────────────────────────
     log("Phase 3/5 — Discovering grant opportunities...")
     ctx.all_candidates = await run_discovery_parallel(
-        ctx.org_profile.search_queries, ctx
+        ctx.org_profile.search_queries, ctx,
+        on_progress=lambda done, total: log(f"  Discovery: {done}/{total} queries complete")
     )
     log(f"  Found {len(ctx.all_candidates)} unique candidates")
 
     # ── PHASE 4: Analyze ──────────────────────────────────────────────────
     log(f"Phase 4/5 — Analyzing top {max_grants} grants...")
     ctx.all_grant_data = await run_analysis_parallel(
-        ctx.all_candidates, ctx, max_grants=max_grants
+        ctx.all_candidates, ctx, max_grants=max_grants,
+        on_progress=lambda done, total: log(f"  Analysis: {done}/{total} grants analyzed")
     )
     log(f"  Analyzed {len(ctx.all_grant_data)} grants")
 
     # ── PHASE 5: Score ────────────────────────────────────────────────────
     log("Phase 5/5 — Scoring grant fit...")
     scored_grants = await run_scoring_parallel(
-        ctx.all_grant_data, ctx.org_profile, ctx
+        ctx.all_grant_data, ctx.org_profile, ctx,
+        on_progress=lambda done, total: log(f"  Scoring: {done}/{total} grants scored")
     )
     log(f"  Scored {len(scored_grants)} grants — top score: {scored_grants[0].score if scored_grants else 0}")
 
@@ -121,7 +121,6 @@ async def run_pipeline_phase1_to_5(
 
 
 # ── PIPELINE: Phases 6–8 (brief through compliance) ──────────────────────
-# Called after the HITL gate once the user has selected grants to draft.
 
 async def run_pipeline_phase6_to_8(
     ctx: PipelineContext,
@@ -130,7 +129,6 @@ async def run_pipeline_phase6_to_8(
 ) -> tuple[bytes, bytes]:
     """
     Run phases 6–8 and assemble final outputs.
-    Receives the PipelineContext from phase 1–5 so all pipeline state is preserved.
     Returns (csv_bytes, docx_bytes) — Gradio serves these as downloads.
     """
 
@@ -140,7 +138,6 @@ async def run_pipeline_phase6_to_8(
         else:
             print(msg)
 
-    # store selected grants in context for downstream reference
     ctx.selected_grants = selected_grants
 
     # ── PHASE 6: Strategic Briefs ─────────────────────────────────────────
@@ -156,7 +153,6 @@ async def run_pipeline_phase6_to_8(
     # ── PHASE 8: Compliance Checks ────────────────────────────────────────
     log("Phase 8/8 — Running compliance checks...")
 
-    # get grant data only for selected grants — compliance needs the requirements
     selected_names = {sg.grant.candidate.name for sg in selected_grants}
     selected_grant_data = [
         gd for gd in ctx.all_grant_data
@@ -166,13 +162,8 @@ async def run_pipeline_phase6_to_8(
     reports = await run_compliance_checks(drafts, selected_grant_data, ctx)
     log(f"  {len(reports)} compliance reports generated")
 
-    # ── OUTPUT ASSEMBLY ───────────────────────────────────────────────────
     log("Assembling outputs...")
-
-    # CSV covers all scored grants — full picture for the user
     csv_bytes = build_csv(ctx.scored_grants)
-
-    # DOCX covers only selected grants — brief + draft + compliance per grant
     docx_bytes = build_docx(
         ctx.org_profile,
         ctx.scored_grants,
@@ -186,46 +177,54 @@ async def run_pipeline_phase6_to_8(
 
 
 # ── HITL HELPERS ──────────────────────────────────────────────────────────
-# These functions sit between phase 1–5 and phase 6–8.
-# format_scores_for_display() renders the scored grants as a readable table.
-# parse_user_selection() converts the user's checkbox choices back into
-# ScoredGrant objects that phase 6–8 can process.
 
 def format_scores_for_display(scored_grants: list) -> list[list]:
-    """
-    Format scored grants as a list of rows for Gradio's DataFrame component.
-    Each row = one grant. Columns match the HITL table headers defined in the UI.
-    """
+    """Format scored grants as rows for Gradio DataFrame."""
     rows = []
     for i, sg in enumerate(scored_grants):
         rows.append([
-            i + 1,                              # rank
-            sg.grant.candidate.name,            # grant name
-            sg.grant.candidate.funder,          # funder
-            sg.score,                           # fit score
-            "Yes" if sg.recommended else "No",  # recommended
-            "Yes" if sg.disqualified else "No", # disqualified
-            f"${sg.grant.award_min:,}–${sg.grant.award_max:,}",  # award range
-            sg.grant.deadline,                  # deadline
+            i + 1,
+            sg.grant.candidate.name,
+            sg.grant.candidate.funder,
+            sg.score,
+            "Yes" if sg.recommended else "No",
+            "Yes" if sg.disqualified else "No",
+            f"${sg.grant.award_min:,}–${sg.grant.award_max:,}",
+            sg.grant.deadline,
             sg.rationale[:120] + "..." if len(sg.rationale) > 120 else sg.rationale
         ])
     return rows
 
 
-def parse_user_selection(
-    scored_grants: list,
-    selected_indices: list[int]
+def build_checkbox_choices(scored_grants: list) -> list[str]:
+    """
+    Build checkbox labels from non-disqualified scored grants.
+    Format: "Score | Grant Name" so user can see fit score at a glance.
+    """
+    choices = []
+    for sg in scored_grants:
+        if not sg.disqualified:
+            label = f"{sg.score} | {sg.grant.candidate.name}"
+            choices.append(label)
+    return choices
+
+
+def parse_checkbox_selection(
+    selected_labels: list[str],
+    scored_grants: list
 ) -> list:
     """
-    Convert user-selected row indices into ScoredGrant objects.
-    selected_indices = list of 0-based row positions the user checked.
-    Returns the selected ScoredGrant objects in score order.
-    Caps at 5 selections — more than 5 grants is too many to draft well.
+    Convert selected checkbox labels back into ScoredGrant objects.
+    Matches by grant name embedded in the label. Caps at 5 selections.
     """
     selected = []
-    for i in selected_indices:
-        if 0 <= i < len(scored_grants):
-            selected.append(scored_grants[i])
+    for label in selected_labels:
+        # label format: "score | grant name" — extract name after the pipe
+        grant_name = label.split(" | ", 1)[1] if " | " in label else label
+        for sg in scored_grants:
+            if sg.grant.candidate.name == grant_name:
+                selected.append(sg)
+                break
 
     if len(selected) > 5:
         print(f"User selected {len(selected)} grants — capping at 5")
@@ -234,63 +233,271 @@ def parse_user_selection(
     return selected
 
 
-# ── MAIN: end-to-end pipeline test ───────────────────────────────────────
-# Temporary test runner — replaced by Gradio UI in Pass 2.
-# Runs the full pipeline with hardcoded inputs and saves outputs to disk.
+# ── GRADIO UI ─────────────────────────────────────────────────────────────
+import gradio as gr
+import tempfile
 
-async def main():
+
+# ── ASYNC HANDLERS ────────────────────────────────────────────────────────
+# Gradio supports async handlers natively — no threading bridge needed.
+# Awaiting the pipeline keeps the event loop free so the browser stays connected.
+
+async def handle_phase1_to_5(
+    org_url: str,
+    org_type: str,
+    user_context: str,
+    max_grants: int,
+    research_depth: str,
+    progress=gr.Progress()
+) -> tuple:
     """
-    TEMPORARY: Pipeline test runner with hardcoded inputs.
-    Replaced by Gradio UI in Step 15.
-    Run with: python app.py
+    Gradio handler for Stage 1 — runs pipeline phases 1–5.
+    Called when user clicks Find Grants.
+    Returns updated UI components + state for Stage 2.
     """
-    print("=== GrantRadar Pipeline Test ===\n")
-
-    # ── PHASE 1–5 ─────────────────────────────────────────────────────────
-    ctx, scored_grants = await run_pipeline_phase1_to_5(
-        org_url="https://www.habitat.org",
-        org_type="nonprofit",
-        user_context="Focus on housing construction and community development grants",
-        max_grants=3,               # keep low for testing
-        research_depth="standard"
-    )
-
-    if not scored_grants:
-        print("No grants found — check search provider and API keys")
+    if not org_url or not org_url.startswith("http"):
+        yield (
+            gr.update(visible=False),
+            gr.update(visible=False),
+            [],
+            gr.update(choices=[], visible=False),
+            None,
+            None,
+            "⚠️ Please enter a valid URL starting with http:// or https://"
+        )
         return
 
-    # ── HITL GATE ─────────────────────────────────────────────────────────
-    print("\n=== SCORED GRANTS ===")
-    rows = format_scores_for_display(scored_grants)
-    for row in rows:
-        print(f"  [{row[0]}] {row[1]} | Score: {row[3]} | Recommended: {row[4]}")
+    try:
+        progress(0, desc="Starting pipeline...")
 
-    # auto-select recommended grants for testing — in UI the user picks manually
-    selected_indices = [
-        i for i, sg in enumerate(scored_grants) if sg.recommended
-    ]
-    if not selected_indices:
-        selected_indices = [0]      # fallback — take top grant if none recommended
+        ctx, scored_grants = await run_pipeline_phase1_to_5(
+            org_url=org_url,
+            org_type=org_type,
+            user_context=user_context,
+            max_grants=int(max_grants),
+            research_depth=research_depth,
+            progress_callback=lambda msg: progress(0.5, desc=msg)
+        )
 
-    selected_grants = parse_user_selection(scored_grants, selected_indices)
-    print(f"\nAuto-selected {len(selected_grants)} grant(s) for drafting:")
-    for sg in selected_grants:
-        print(f"  - {sg.grant.candidate.name}")
+        if not scored_grants:
+            yield (
+                gr.update(visible=False),
+                gr.update(visible=False),
+                [],
+                gr.update(choices=[], visible=False),
+                None,
+                None,
+                "⚠️ No grants found. Try a different URL or check your API keys."
+            )
+            return
 
-    # ── PHASE 6–8 ─────────────────────────────────────────────────────────
-    print("\nRunning phases 6–8...")
-    csv_bytes, docx_bytes = await run_pipeline_phase6_to_8(ctx, selected_grants)
+        progress(0.9, desc="Preparing results...")
 
-    # save outputs to disk for inspection
-    with open("test_output.csv", "wb") as f:
-        f.write(csv_bytes)
-    with open("test_output.docx", "wb") as f:
-        f.write(docx_bytes)
+        table_rows = format_scores_for_display(scored_grants)
+        checkbox_choices = build_checkbox_choices(scored_grants)
 
-    print("\n=== DONE ===")
-    print(f"CSV saved: test_output.csv ({len(csv_bytes)} bytes)")
-    print(f"DOCX saved: test_output.docx ({len(docx_bytes)} bytes)")
+        yield (
+            gr.update(visible=True),
+            gr.update(visible=True),
+            table_rows,
+            gr.update(choices=checkbox_choices, value=[], visible=True),
+            ctx,
+            scored_grants,
+            f"✅ Found {len(scored_grants)} grants — {len(checkbox_choices)} eligible for drafting. Select below."
+        )
+
+    except Exception as e:
+        yield (
+            gr.update(visible=False),
+            gr.update(visible=False),
+            [],
+            gr.update(choices=[], visible=False),
+            None,
+            None,
+            f"❌ Pipeline error: {str(e)}"
+        )
 
 
+async def handle_phase6_to_8(
+    selected_labels: list,
+    ctx,
+    scored_grants: list,
+    progress=gr.Progress()
+) -> tuple:
+    """
+    Gradio handler for Stage 2 — runs pipeline phases 6–8.
+    Called when user clicks Draft Selected Grants.
+    Returns download file paths for CSV and DOCX.
+    """
+    if ctx is None or scored_grants is None:
+        yield (
+            gr.update(visible=False),
+            None,
+            None,
+            "⚠️ Please run Find Grants first."
+        )
+        return
+
+    if not selected_labels:
+        yield (
+            gr.update(visible=False),
+            None,
+            None,
+            "⚠️ Please select at least one grant to draft."
+        )
+        return
+
+    try:
+        progress(0, desc="Starting drafting pipeline...")
+
+        selected_grants = parse_checkbox_selection(selected_labels, scored_grants)
+
+        progress(0.1, desc="Writing strategic briefs...")
+
+        csv_bytes, docx_bytes = await run_pipeline_phase6_to_8(
+            ctx=ctx,
+            selected_grants=selected_grants,
+            progress_callback=lambda msg: progress(0.5, desc=msg)
+        )
+
+        progress(0.9, desc="Assembling downloads...")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as f:
+            f.write(csv_bytes)
+            csv_path = f.name
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as f:
+            f.write(docx_bytes)
+            docx_path = f.name
+
+        yield (
+            gr.update(visible=True),
+            csv_path,
+            docx_path,
+            f"✅ Done — {len(selected_grants)} grant(s) drafted. Download your files below."
+        )
+
+    except Exception as e:
+        yield (
+            gr.update(visible=False),
+            None,
+            None,
+            f"❌ Drafting error: {str(e)}"
+        )
+
+
+# ── GRADIO LAYOUT ─────────────────────────────────────────────────────────
+
+with gr.Blocks(title="GrantRadar") as demo:
+
+    # ── HEADER ────────────────────────────────────────────────────────────
+    gr.Markdown("""
+    # 🎯 GrantRadar
+    **AI-powered grant discovery and proposal drafting for nonprofits.**
+    Enter your organization's website URL and GrantRadar will find matching
+    grants, score them for fit, and draft proposal sections for the best opportunities.
+    """)
+
+    # ── STAGE 1: INPUT FORM ───────────────────────────────────────────────
+    with gr.Row():
+        with gr.Column(scale=2):
+            org_url = gr.Textbox(
+                label="Organization Website URL",
+                placeholder="https://www.yourorg.org",
+                info="The homepage of the grant-seeking organization"
+            )
+        with gr.Column(scale=1):
+            org_type = gr.Dropdown(
+                choices=["nonprofit", "for-profit", "government"],
+                value="nonprofit",
+                label="Organization Type"
+            )
+
+    user_context = gr.Textbox(
+        label="Additional Context (optional)",
+        placeholder="e.g. Focus on youth programs, we serve Dallas-Fort Worth, target grants $25K–$100K",
+        info="Any priorities, program names, or constraints to factor into the search",
+        lines=2
+    )
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            max_grants = gr.Slider(
+                minimum=3,
+                maximum=15,
+                value=5,
+                step=1,
+                label="Max Grants to Analyze",
+                info="Higher = more thorough but slower"
+            )
+        with gr.Column(scale=1):
+            research_depth = gr.Dropdown(
+                choices=["quick", "standard", "deep"],
+                value="standard",
+                label="Research Depth"
+            )
+
+    find_btn = gr.Button("🔍 Find Grants", variant="primary", size="lg")
+    status_msg = gr.Markdown("")
+
+    # ── STAGE 1: RESULTS TABLE ────────────────────────────────────────────
+    with gr.Column(visible=False) as results_section:
+        gr.Markdown("## Scored Grant Opportunities")
+        scores_table = gr.DataFrame(
+            headers=["Rank", "Grant Name", "Funder", "Score", "Recommended",
+                     "Disqualified", "Award Range", "Deadline", "Rationale"],
+            datatype=["number", "str", "str", "number", "str", "str", "str", "str", "str"],
+            wrap=True
+        )
+
+    # ── STAGE 2: HITL SELECTION ───────────────────────────────────────────
+    with gr.Column(visible=False) as hitl_section:
+        gr.Markdown("## Select Grants to Draft")
+        gr.Markdown("Check the grants you want proposals drafted for, then click **Draft Selected Grants**.")
+
+        # populated dynamically after phase 1-5 completes
+        grant_checkboxes = gr.CheckboxGroup(
+            choices=[],
+            label="Eligible Grants (Score | Grant Name)",
+            visible=False
+        )
+
+        draft_btn = gr.Button("✍️ Draft Selected Grants", variant="primary", size="lg")
+
+    # ── STAGE 2: DOWNLOADS ────────────────────────────────────────────────
+    with gr.Column(visible=False) as download_section:
+        gr.Markdown("## Downloads")
+        with gr.Row():
+            csv_download = gr.File(label="Grant Opportunities (CSV)")
+            docx_download = gr.File(label="Full Report with Proposals (DOCX)")
+
+    # ── STATE ─────────────────────────────────────────────────────────────
+    ctx_state = gr.State(None)          # holds PipelineContext between stages
+    grants_state = gr.State(None)       # holds scored_grants list between stages
+
+    # ── EVENT WIRING ──────────────────────────────────────────────────────
+    # show immediate status, then run async pipeline
+    find_btn.click(
+        fn=lambda: "⏳ Pipeline running — this takes 2–3 minutes. Please wait...",
+        outputs=[status_msg]
+    ).then(
+        fn=handle_phase1_to_5,
+        inputs=[org_url, org_type, user_context, max_grants, research_depth],
+        outputs=[results_section, hitl_section, scores_table,
+                 grant_checkboxes, ctx_state, grants_state, status_msg]
+    )
+
+    draft_btn.click(
+        fn=lambda: "⏳ Drafting proposals — this takes 3–5 minutes. Please wait...",
+        outputs=[status_msg]
+    ).then(
+        fn=handle_phase6_to_8,
+        inputs=[grant_checkboxes, ctx_state, grants_state],
+        outputs=[download_section, csv_download, docx_download, status_msg]
+    )
+
+
+# ── LAUNCH ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    asyncio.run(main())
+    demo.queue()                        # required for .then() chaining and async handlers
+    demo.launch(theme=gr.themes.Soft())

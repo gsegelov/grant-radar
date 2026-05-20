@@ -98,7 +98,8 @@ def deduplicate_candidates(all_candidates: list[GrantCandidate]) -> list[GrantCa
 
 async def run_discovery_parallel(
     search_queries: list[str],
-    ctx: PipelineContext
+    ctx: PipelineContext,
+    on_progress=None
 ) -> list[GrantCandidate]:
     """
     Run GrantDiscoverer with staggered start times to avoid Tavily rate limiting.
@@ -117,12 +118,14 @@ async def run_discovery_parallel(
         tasks.append((task, query))
 
     # wait for all tasks to complete and collect results
-    for task, query in tasks:
+    for idx, (task, query) in enumerate(tasks):
         try:
             result = await task
             candidates = parse_grant_candidates(result.final_output, query)
             all_candidates.extend(candidates)
         except Exception as e:
             print(f"Discovery query failed: {e}")
+        if on_progress:
+            on_progress(idx + 1, len(tasks))
 
     return deduplicate_candidates(all_candidates)

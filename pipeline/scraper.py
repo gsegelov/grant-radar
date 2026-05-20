@@ -18,7 +18,7 @@ from agents import (Agent, Runner, input_guardrail, GuardrailFunctionOutput,
                     set_default_openai_api, set_tracing_disabled)
 from models.schemas import ScrapedSite, UrlValidationResult
 from pipeline.context import PipelineContext
-from tools.fetch_tools import fetch_page, validate_url
+from tools.fetch_tools import fetch_page
 from tools.parse_utils import parse_json_output
 
 load_dotenv()
@@ -37,8 +37,8 @@ set_tracing_disabled(True)
 
 # ── GUARDRAIL: URLValidator ───────────────────────────────────────────────
 # Fires automatically before WebScraper runs on every call.
-# If the URL is invalid, tripwire_triggered=True stops the pipeline here —
-# no scraping, no profiling, no credits spent.
+# Pure Python HTTP check — no LLM sub-agent, no credits spent.
+# Only blocks social media, Wikipedia, and unreachable URLs.
 
 @input_guardrail
 async def url_validator_guardrail(
@@ -47,26 +47,43 @@ async def url_validator_guardrail(
     input: str
 ) -> GuardrailFunctionOutput:
     """Check the submitted URL before allowing WebScraper to run."""
+    import requests
 
-    validator_agent = Agent(
-        name="URLValidator",
-        instructions="""You are a URL validator. Use the validate_url tool on the URL provided.
-        After calling the tool, return ONLY a JSON object with no markdown fences:
-        {"is_valid": true or false, "reason": "explanation here"}""",
-        tools=[validate_url],
-        model="gemini-2.5-flash"
-    )
+    # blocked domains — never legitimate org websites
+    BLOCKED_DOMAINS = [
+        "facebook.com", "twitter.com", "instagram.com", "linkedin.com",
+        "wikipedia.org", "youtube.com", "tiktok.com"
+    ]
 
-    result = await Runner.run(validator_agent, input, context=ctx.context)
+    # check for blocked domains — no network request needed
+    for domain in BLOCKED_DOMAINS:
+        if domain in input:
+            return GuardrailFunctionOutput(
+                output_info=UrlValidationResult(
+                    is_valid=False,
+                    reason=f"URL appears to be a {domain} page, not an organization website."
+                ),
+                tripwire_triggered=True
+            )
 
-    # parse JSON output using shared utility — handles fences and escape issues
-    data = parse_json_output(result.final_output)
-    validation = UrlValidationResult(**data)
-
-    return GuardrailFunctionOutput(
-        output_info=validation,
-        tripwire_triggered=not validation.is_valid
-    )
+    # for everything else — direct HTTP check, no LLM involved
+    try:
+        response = await asyncio.to_thread(
+            requests.get, input, timeout=15, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        is_valid = response.status_code < 500   # accept anything that isn't a server error
+        return GuardrailFunctionOutput(
+            output_info=UrlValidationResult(
+                is_valid=is_valid,
+                reason="OK" if is_valid else f"HTTP {response.status_code}"
+            ),
+            tripwire_triggered=not is_valid
+        )
+    except Exception as e:
+        return GuardrailFunctionOutput(
+            output_info=UrlValidationResult(is_valid=False, reason=str(e)),
+            tripwire_triggered=True
+        )
 
 
 # ── AGENT: WebScraper ─────────────────────────────────────────────────────

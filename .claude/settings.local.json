@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(python:*)",
+      "Bash(pip show:*)",
+      "Bash(pip list:*)",
+      "Bash(TaskOutput_file=\"/mnt/c/Users/gilas/AppData/Local/Temp/claude/C--Projects-career-portfolio-grant-radar/tasks/bl7hxbj2i.output\")",
+      "Read(//c/Projects/career-portfolio/grant-radar/**)",
+      "Bash(.venv/Scripts/python:*)",
+      "Read(//mnt/c/Users/gilas/AppData/Local/Temp/claude/C--Projects-career-portfolio-grant-radar/tasks/**)",
+      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\gilas\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Projects-career-portfolio-grant-radar\\\\tasks\\\\bl82hw0dw.output''\")",
+      "Bash(powershell.exe:*)"
+    ]
+  }
+}

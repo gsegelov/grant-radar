@@ -100,8 +100,7 @@ fit_scorer = Agent(
         "disqualifiers": [],
         "recommended": false
     }""",
-    model="gemini-2.5-pro",
-    output_guardrails=[scoring_validator]
+    model="gemini-2.5-flash"
 )
 
 
@@ -140,7 +139,8 @@ def parse_scored_grant(raw_output: str, grant_data: GrantData) -> ScoredGrant:
 async def run_scoring_parallel(
     grant_data_list: list[GrantData],
     org_profile: OrgProfile,
-    ctx: PipelineContext
+    ctx: PipelineContext,
+    on_progress=None
 ) -> list[ScoredGrant]:
     """
     Run FitScorer in parallel across all GrantData objects.
@@ -148,24 +148,33 @@ async def run_scoring_parallel(
     can check accumulating scores across the batch.
     Called by app.py after Phase 4 completes.
     """
+    sem = asyncio.Semaphore(3)  # max 3 concurrent scoring calls — avoids Gemini rate limiting
+
+    async def _score_one(i, gd):
+        async with sem:
+            await asyncio.sleep(i * 1.0)  # stagger by 1s per task
+            result = await Runner.run(
+                fit_scorer,
+                build_scorer_input(gd, org_profile),
+                context=ctx
+            )
+            return i, result
+
     tasks = [
-        Runner.run(
-            fit_scorer,
-            build_scorer_input(gd, org_profile),
-            context=ctx
-        )
-        for gd in grant_data_list
+        asyncio.ensure_future(_score_one(i, gd))
+        for i, gd in enumerate(grant_data_list)
     ]
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     scored_grants = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            print(f"Scoring failed for {grant_data_list[i].candidate.name}: {result}")
-            continue
-        scored = parse_scored_grant(result.final_output, grant_data_list[i])
-        scored_grants.append(scored)
-        ctx.scored_grants.append(scored)
+    for coro in asyncio.as_completed(tasks):
+        try:
+            i, result = await coro
+            scored = parse_scored_grant(result.final_output, grant_data_list[i])
+            scored_grants.append(scored)
+            ctx.scored_grants.append(scored)
+            if on_progress:
+                on_progress(len(scored_grants), len(grant_data_list))
+        except Exception as e:
+            print(f"Scoring failed: {e}")
 
     return sorted(scored_grants, key=lambda sg: sg.score, reverse=True)
