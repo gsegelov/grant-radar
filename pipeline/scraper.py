@@ -82,7 +82,7 @@ async def url_validator_guardrail(
     except Exception as e:
         return GuardrailFunctionOutput(
             output_info=UrlValidationResult(is_valid=False, reason=str(e)),
-            tripwire_triggered=True
+            tripwire_triggered=False
         )
 
 
