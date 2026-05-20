@@ -299,7 +299,7 @@ async def handle_phase1_to_5(
         yield (
             gr.update(visible=True),
             gr.update(visible=True),
-            table_rows,
+            gr.update(value=table_rows),
             gr.update(choices=checkbox_choices, value=[], visible=True),
             ctx,
             scored_grants,
