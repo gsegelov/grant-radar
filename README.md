@@ -1,17 +1,29 @@
+---
+title: GrantRadar
+emoji: 🎯
+colorFrom: blue
+colorTo: purple
+sdk: gradio
+sdk_version: 6.14.0
+app_file: app.py
+pinned: false
+---
+
 # GrantRadar
-   
-   An AI agent pipeline that takes a nonprofit's website URL and produces a ranked grant opportunity report with strategic application briefs, draft proposals, and compliance checklists.
-   
-   Built with the OpenAI Agents SDK and Gemini API.
-   
-   ## Setup
-   
-```bash
-   python -m venv .venv
-   source .venv/bin/activate   # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   cp .env.example .env        # add your API keys
-   python app.py
-```
-   
-   Status: in development — full README coming with deployment.
+
+AI-powered grant discovery and proposal drafting for nonprofits.
+
+Enter your organization's website URL and GrantRadar will find matching grants, score them for fit, and draft proposal sections for the best opportunities.
+
+## Setup
+
+Add the following secrets in Space Settings → Variables and Secrets:
+- `GOOGLE_API_KEY`
+- `TAVILY_API_KEY`
+- `SEARCH_PROVIDER` (set to `tavily`)
+- `MAX_GRANTS_TO_ANALYZE` (set to `5`)
+- `RESEARCH_DEPTH` (set to `standard`)
+
+## Stack
+
+Built with the OpenAI Agents SDK, Gemini API, Tavily search, and Gradio.
