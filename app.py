@@ -40,6 +40,7 @@ load_dotenv()
 gemini_client = AsyncOpenAI(
     api_key=os.getenv("GOOGLE_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    timeout=60.0    # HTTP-level timeout — httpx respects this
 )
 set_default_openai_client(gemini_client)
 set_default_openai_api("chat_completions")
