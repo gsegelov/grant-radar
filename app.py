@@ -425,12 +425,12 @@ with gr.Blocks(title="GrantRadar") as demo:
         with gr.Column(scale=1):
             max_grants = gr.Slider(
                 minimum=3,
-                maximum=15,
-                value=5,
+                maximum=4,
+                value=4,
                 step=1,
                 label="Max Grants to Analyze",
                 info="Higher = more thorough but slower"
-            )
+)
         with gr.Column(scale=1):
             research_depth = gr.Dropdown(
                 choices=["quick", "standard", "deep"],
