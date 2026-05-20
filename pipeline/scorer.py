@@ -143,42 +143,27 @@ async def run_scoring_parallel(
     on_progress=None
 ) -> list[ScoredGrant]:
     """
-    Run FitScorer in parallel across all GrantData objects.
+    Score each grant sequentially with a 1-second gap between calls.
     Stores results in ctx.scored_grants as they complete so the guardrail
     can check accumulating scores across the batch.
     Called by app.py after Phase 4 completes.
     """
-    sem = asyncio.Semaphore(3)  # max 3 concurrent scoring calls — avoids Gemini rate limiting
-
-    async def _score_one(i, gd):
-        async with sem:
-            await asyncio.sleep(i * 1.0)  # stagger by 1s per task
+    scored_grants = []
+    for i, gd in enumerate(grant_data_list):
+        try:
+            await asyncio.sleep(1)  # 1 second between calls
             result = await Runner.run(
                 fit_scorer,
                 build_scorer_input(gd, org_profile),
                 context=ctx
             )
-            return i, result
-
-    tasks = [
-        asyncio.ensure_future(_score_one(i, gd))
-        for i, gd in enumerate(grant_data_list)
-    ]
-
-    done, pending = await asyncio.wait(tasks, timeout=45)
-    for task in pending:
-        task.cancel()
-
-    scored_grants = []
-    for task in done:
-        try:
-            i, result = task.result()
-            scored = parse_scored_grant(result.final_output, grant_data_list[i])
+            scored = parse_scored_grant(result.final_output, gd)
             scored_grants.append(scored)
             ctx.scored_grants.append(scored)
             if on_progress:
                 on_progress(len(scored_grants), len(grant_data_list))
         except Exception as e:
-            print(f"Scoring failed: {e}")
+            print(f"Scoring failed for {gd.candidate.name}: {e}")
+            continue
 
     return sorted(scored_grants, key=lambda sg: sg.score, reverse=True)
