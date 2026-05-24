@@ -8,25 +8,10 @@ Output feeds: FitScorer, StrategicBriefWriter, ProposalDrafter, PipelineContext.
 The quality of search_queries generated here determines what grants get found.
 """
 
-import os
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
-from agents import (Agent, Runner, set_default_openai_client,
-                    set_default_openai_api, set_tracing_disabled)
+from agents import Agent
 from models.schemas import OrgProfile, ScrapedSite
 from pipeline.context import PipelineContext
 from tools.parse_utils import parse_json_output
-
-load_dotenv()
-
-# ── GEMINI SETUP ──────────────────────────────────────────────────────────
-gemini_client = AsyncOpenAI(
-    api_key=os.getenv("GOOGLE_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-set_default_openai_client(gemini_client)
-set_default_openai_api("chat_completions")
-set_tracing_disabled(True)
 
 
 # ── AGENT: OrgProfiler ────────────────────────────────────────────────────

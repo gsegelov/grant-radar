@@ -8,28 +8,13 @@ Output feeds FitScorer and ComplianceChecker — quality of extraction here
 directly determines scoring accuracy and compliance check usefulness.
 """
 
-import os
 import asyncio
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
-from agents import (Agent, Runner, set_default_openai_client,
-                    set_default_openai_api, set_tracing_disabled)
+from agents import Agent, Runner
 from models.schemas import GrantCandidate, GrantData
 from pipeline.context import PipelineContext
 from tools.fetch_tools import fetch_page
 from tools.search_tools import search_grants
 from tools.parse_utils import parse_json_output
-
-load_dotenv()
-
-# ── GEMINI SETUP ──────────────────────────────────────────────────────────
-gemini_client = AsyncOpenAI(
-    api_key=os.getenv("GOOGLE_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-set_default_openai_client(gemini_client)
-set_default_openai_api("chat_completions")
-set_tracing_disabled(True)
 
 
 # ── AGENT: GrantAnalyzer ──────────────────────────────────────────────────

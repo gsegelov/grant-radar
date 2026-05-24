@@ -6,31 +6,17 @@ ScoringValidator — output guardrail that fires after every FitScorer run.
 Called in parallel via asyncio.gather() in app.py, once per GrantData.
 """
 
-import os
 import asyncio
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
 from agents import (Agent, Runner, output_guardrail, GuardrailFunctionOutput,
-                    RunContextWrapper, set_default_openai_client,
-                    set_default_openai_api, set_tracing_disabled)
+                    RunContextWrapper)
 from models.schemas import GrantData, ScoredGrant, OrgProfile
 from pipeline.context import PipelineContext
 from tools.parse_utils import parse_json_output
 
-load_dotenv()
-
-# ── GEMINI SETUP ──────────────────────────────────────────────────────────
-gemini_client = AsyncOpenAI(
-    api_key=os.getenv("GOOGLE_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-set_default_openai_client(gemini_client)
-set_default_openai_api("chat_completions")
-set_tracing_disabled(True)
-
 RECOMMENDATION_THRESHOLD = 60
 
 
+# Detached — batch validation only; not for per-call use
 # ── GUARDRAIL: ScoringValidator ───────────────────────────────────────────
 # Fires after every FitScorer run.
 # Pure Python — no LLM needed, just arithmetic checks.

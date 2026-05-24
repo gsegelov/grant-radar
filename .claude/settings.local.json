@@ -10,7 +10,8 @@
       "Bash(.venv/Scripts/python:*)",
       "Read(//mnt/c/Users/gilas/AppData/Local/Temp/claude/C--Projects-career-portfolio-grant-radar/tasks/**)",
       "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\gilas\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Projects-career-portfolio-grant-radar\\\\tasks\\\\bl82hw0dw.output''\")",
-      "Bash(powershell.exe:*)"
+      "Bash(powershell.exe:*)",
+      "Bash(git:*)"
     ]
   }
 }

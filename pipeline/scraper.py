@@ -9,30 +9,13 @@ Since every agent in this pipeline uses at least one tool, all agents return
 JSON text that we parse manually and validate with Pydantic.
 """
 
-import os
 import asyncio
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
 from agents import (Agent, Runner, input_guardrail, GuardrailFunctionOutput,
-                    RunContextWrapper, set_default_openai_client,
-                    set_default_openai_api, set_tracing_disabled)
+                    RunContextWrapper)
 from models.schemas import ScrapedSite, UrlValidationResult
 from pipeline.context import PipelineContext
 from tools.fetch_tools import fetch_page
 from tools.parse_utils import parse_json_output
-
-load_dotenv()
-
-# ── GEMINI SETUP ──────────────────────────────────────────────────────────
-# Routes SDK calls through Gemini's OpenAI-compatible endpoint.
-# set_tracing_disabled silences OPENAI_API_KEY warnings.
-gemini_client = AsyncOpenAI(
-    api_key=os.getenv("GOOGLE_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-set_default_openai_client(gemini_client)
-set_default_openai_api("chat_completions")
-set_tracing_disabled(True)
 
 
 # ── GUARDRAIL: URLValidator ───────────────────────────────────────────────
